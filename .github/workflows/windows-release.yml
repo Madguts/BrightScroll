@@ -38,14 +38,24 @@ jobs:
 
       - name: Publish Windows app
         shell: pwsh
-        run: ./scripts/publish-windows.ps1
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          if ($tag -notmatch '^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$') {
+            throw "Release tag '$tag' must contain a semantic version, for example v1.2.3."
+          }
+          $version = $Matches[1]
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          $env:APP_VERSION = $version
+          ./scripts/publish-windows.ps1 -Version $env:APP_VERSION
 
       - name: Install Inno Setup
         run: choco install innosetup --yes --no-progress
 
       - name: Build installer
         shell: pwsh
-        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\BrightScroll.iss'
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:APP_VERSION" installer\BrightScroll.iss'
 
       - name: Attach installer to GitHub Release
         uses: softprops/action-gh-release@v2

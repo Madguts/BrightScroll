@@ -23,9 +23,9 @@ internal sealed class SettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = true;
-        ClientSize = new Size(420, 360);
+        ClientSize = new Size(560, 420);
 
-        _fontDialog = new FontDialog { Font = CreateDialogFont(settings.FontFamily), ShowColor = false };
+        _fontDialog = new FontDialog { Font = CreateDialogFont("Segoe UI"), ShowColor = false };
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -33,7 +33,7 @@ internal sealed class SettingsForm : Form
             RowCount = 4,
             Padding = new Padding(16)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
@@ -50,21 +50,6 @@ internal sealed class SettingsForm : Form
         increment.ValueChanged += (_, _) => ChangeSettings(() => _settings.Increment = (int)increment.Value);
         settingsPanel.Controls.Add(increment);
 
-        var styleButtons = new FlowLayoutPanel { AutoSize = true };
-        var fontButton = new Button { Text = "Font…", AutoSize = true };
-        fontButton.Click += (_, _) =>
-        {
-            if (_fontDialog.ShowDialog(this) == DialogResult.OK)
-            {
-                ChangeSettings(() => _settings.FontFamily = _fontDialog.Font.Name);
-            }
-        };
-        var textColorButton = new Button { Text = "Text color…", AutoSize = true };
-        textColorButton.Click += (_, _) => ChooseColor(_settings.TextColor, value => _settings.TextColor = value);
-        var backgroundColorButton = new Button { Text = "Background…", AutoSize = true };
-        backgroundColorButton.Click += (_, _) => ChooseColor(_settings.BackgroundColor, value => _settings.BackgroundColor = value);
-        styleButtons.Controls.AddRange([fontButton, textColorButton, backgroundColorButton]);
-        settingsPanel.Controls.Add(styleButtons);
         root.Controls.Add(settingsPanel, 0, 0);
 
         root.Controls.Add(new Label
@@ -103,13 +88,54 @@ internal sealed class SettingsForm : Form
     internal void UpdateDisplays(IEnumerable<DisplayEntry> displays)
     {
         _displayList.SuspendLayout();
+        foreach (Control control in _displayList.Controls)
+        {
+            control.Dispose();
+        }
+
         _displayList.Controls.Clear();
         foreach (var display in displays)
         {
+            var appearanceIdentity = display.AppearanceIdentity;
+            var appearance = _settings.GetAppearance(appearanceIdentity);
+            var row = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                WrapContents = false,
+                Margin = new Padding(0, 2, 0, 4)
+            };
             var text = display.Status?.IsAvailable == true
-                ? $"{display.DeviceName}: {display.Status.Percent}%"
-                : $"{display.DeviceName}: {display.Status?.Message ?? "Reading brightness…"}";
-            _displayList.Controls.Add(new Label { Text = text, AutoSize = true, MaximumSize = new Size(360, 0) });
+                ? $"{display.DisplayName}: {display.Status.Percent}%"
+                : $"{display.DisplayName}: {display.Status?.Message ?? "Reading brightness…"}";
+            row.Controls.Add(new Label
+            {
+                Text = text,
+                AutoSize = true,
+                MaximumSize = new Size(280, 0),
+                Margin = new Padding(3, 8, 8, 3)
+            });
+
+            var fontButton = new Button { Text = "Font…", AutoSize = true };
+            fontButton.Click += (_, _) =>
+            {
+                _fontDialog.Font = CreateDialogFont(_settings.GetAppearance(appearanceIdentity).FontFamily);
+                if (_fontDialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    ChangeSettings(() =>
+                        _settings.GetAppearance(appearanceIdentity).FontFamily = _fontDialog.Font.Name);
+                }
+            };
+            var textColorButton = new Button { Text = "Text color…", AutoSize = true };
+            textColorButton.Click += (_, _) =>
+            {
+                var currentColor = _settings.GetAppearance(appearanceIdentity).TextColor;
+                ChooseColor(
+                    currentColor,
+                    value => _settings.GetAppearance(appearanceIdentity).TextColor = value);
+            };
+            row.Controls.Add(fontButton);
+            row.Controls.Add(textColorButton);
+            _displayList.Controls.Add(row);
         }
 
         _displayList.ResumeLayout();
@@ -128,13 +154,7 @@ internal sealed class SettingsForm : Form
 
     private void ChangeSettings(Action change)
     {
-        var previous = new AppSettings
-        {
-            FontFamily = _settings.FontFamily,
-            TextColor = _settings.TextColor,
-            BackgroundColor = _settings.BackgroundColor,
-            Increment = _settings.Increment
-        };
+        var previous = _settings.CreateSnapshot();
         change();
         try
         {
@@ -144,10 +164,7 @@ internal sealed class SettingsForm : Form
         }
         catch (Exception exception)
         {
-            _settings.FontFamily = previous.FontFamily;
-            _settings.TextColor = previous.TextColor;
-            _settings.BackgroundColor = previous.BackgroundColor;
-            _settings.Increment = previous.Increment;
+            _settings.Restore(previous);
             _errorLabel.Text = $"Could not save settings: {exception.Message}";
         }
     }
@@ -165,9 +182,15 @@ internal sealed class SettingsForm : Form
     }
 }
 
-internal sealed class DisplayEntry(string deviceName, BrightnessStatus? status)
+internal sealed class DisplayEntry(
+    string deviceName,
+    string displayName,
+    string appearanceIdentity,
+    BrightnessStatus? status)
 {
     internal string DeviceName { get; } = deviceName;
+    internal string DisplayName { get; set; } = displayName;
+    internal string AppearanceIdentity { get; set; } = appearanceIdentity;
     internal Guid Id { get; } = Guid.NewGuid();
     internal int Index { get; set; }
     internal Icon? Icon { get; set; }

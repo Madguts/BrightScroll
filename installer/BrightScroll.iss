@@ -1,5 +1,7 @@
 #define AppName "BrightScroll"
-#define AppVersion "1.0.0"
+#ifndef AppVersion
+  #error "AppVersion must be supplied by the release tag or command line"
+#endif
 #define AppPublisher "Madguts"
 #define AppExeName "BrightScroll.exe"
 
