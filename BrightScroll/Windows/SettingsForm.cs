@@ -11,12 +11,19 @@ internal sealed class SettingsForm : Form
     private readonly FlowLayoutPanel _displayList;
     private readonly Label _errorLabel;
     private readonly FontDialog _fontDialog;
+    private readonly Icon? _applicationIcon;
 
     internal SettingsForm(AppSettings settings, string settingsPath, Action settingsChanged, Action exit)
     {
         _settings = settings;
         _settingsPath = settingsPath;
         _settingsChanged = settingsChanged;
+        _applicationIcon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        if (_applicationIcon is not null)
+        {
+            Icon = _applicationIcon;
+        }
+
         Text = "BrightScroll settings";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -82,7 +89,11 @@ internal sealed class SettingsForm : Form
             e.Cancel = true;
             Hide();
         };
-        FormClosed += (_, _) => _fontDialog.Dispose();
+        FormClosed += (_, _) =>
+        {
+            _fontDialog.Dispose();
+            _applicationIcon?.Dispose();
+        };
     }
 
     internal void UpdateDisplays(IEnumerable<DisplayEntry> displays)
@@ -143,6 +154,14 @@ internal sealed class SettingsForm : Form
 
     internal void ShowError(string message) => _errorLabel.Text = message;
 
+    internal void ClearError(string message)
+    {
+        if (_errorLabel.Text == message)
+        {
+            _errorLabel.Text = string.Empty;
+        }
+    }
+
     private void ChooseColor(string current, Action<string> update)
     {
         using var dialog = new ColorDialog { Color = ColorTranslator.FromHtml(current), FullOpen = true };
@@ -194,5 +213,9 @@ internal sealed class DisplayEntry(
     internal Guid Id { get; set; } = NotificationIconIdentity.Create(appearanceIdentity);
     internal int Index { get; set; }
     internal Icon? Icon { get; set; }
+    internal bool IsRegistered { get; set; }
+    internal int ConsecutiveIconFailures { get; set; }
+    internal DateTimeOffset NextIconRetryAt { get; set; }
+    internal string? IconFailureMessage { get; set; }
     internal BrightnessStatus? Status { get; set; } = status;
 }

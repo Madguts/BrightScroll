@@ -2,9 +2,12 @@
 
 BrightScroll is a lightweight Windows tray app that shows one numeric brightness icon for each connected display. The icons have a transparent background and show a large brightness number; hover to see the monitor name, then scroll the mouse wheel over an icon to change that display's brightness. Click an icon to open settings for the scroll increment and each display's font and text color.
 
+The BrightScroll application and installer shortcut use the BrightScroll logo.
+
 ## Windows behavior and limitations
 
 - BrightScroll registers a separate notification-area icon per Windows display. Since the notification area does not reliably forward wheel events to icons, the app checks whether the cursor is over each icon using `Shell_NotifyIconGetRect` and a low-level mouse-wheel hook.
+- If Windows temporarily rejects an icon registration, BrightScroll keeps the display entry and retries with an increasing delay. It re-registers icons after Explorer recreates the taskbar and continues polling for displays that reconnect; failures are logged and shown in Settings instead of escaping the window callback.
 - Each icon uses a deterministic GUID derived from the monitor identity where available, allowing Windows to associate the icon with the same notification-area entry after BrightScroll restarts. If Windows does not provide a stable monitor identity, BrightScroll falls back to its display device name. Windows may still place icons in its overflow area; Windows provides no supported app API to pin an icon or force it to remain visible.
 - The icon bitmap is rendered with a transparent background, with the number fitted to the available icon bounds. Windows controls final notification-area sizing and rendering, so appearance can vary with DPI, Windows versions, and shell settings.
 - Monitor-name hover text uses the standard notification-area tooltip. Windows limits it to 127 UTF-16 characters plus the terminating null character.

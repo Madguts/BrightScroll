@@ -28,7 +28,7 @@ Name: "startup"; Description: "Start BrightScroll when I sign in"; GroupDescript
 Source: "..\BrightScroll\bin\Release\net8.0-windows\win-x64\publish\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\BrightScroll"; Filename: "{app}\{#AppExeName}"
+Name: "{group}\BrightScroll"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\{#AppExeName}"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "BrightScroll"; ValueData: """{app}\{#AppExeName}"""; Tasks: startup; Flags: uninsdeletevalue

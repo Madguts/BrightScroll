@@ -29,6 +29,26 @@ foreach (var (current, increment, notches, expected) in cases)
     }
 }
 
+var retryDelays = new[] { 5, 10, 20, 40, 60, 60 };
+for (var index = 0; index < retryDelays.Length; index++)
+{
+    var actual = TrayIconRetryDelay.GetDelay(index + 1);
+    if (actual != TimeSpan.FromSeconds(retryDelays[index]))
+    {
+        throw new InvalidOperationException(
+            $"Tray icon retry {index + 1} returned {actual.TotalSeconds}s, expected {retryDelays[index]}s.");
+    }
+}
+
+try
+{
+    TrayIconRetryDelay.GetDelay(0);
+    throw new InvalidOperationException("A zero-failure tray retry count was accepted.");
+}
+catch (ArgumentOutOfRangeException)
+{
+}
+
 var settingsPath = Path.Combine(Path.GetTempPath(), $"BrightScroll-{Guid.NewGuid():N}", "settings.json");
 try
 {
@@ -102,4 +122,5 @@ finally
     }
 }
 
-Console.WriteLine($"Passed {cases.Length} brightness cases and settings migration/persistence checks.");
+Console.WriteLine(
+    $"Passed {cases.Length} brightness cases, tray icon retry backoff, and settings migration/persistence checks.");

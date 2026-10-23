@@ -10,6 +10,7 @@ internal static class NativeMethods
     internal const int WmRButtonUp = 0x0205;
     internal const int WmContextMenu = 0x007B;
     internal const int WmDisplayChange = 0x007E;
+    internal const int WmDeviceChange = 0x0219;
     internal const int WhMouseLl = 14;
     internal const uint NimAdd = 0;
     internal const uint NimModify = 1;
