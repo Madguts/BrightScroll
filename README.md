@@ -19,3 +19,5 @@ Requirements: Windows 10 or 11, .NET 8 SDK, and Inno Setup 6 for the installer.
 4. Run the installer. Starting BrightScroll when you sign in is an optional installer task.
 
 Settings are saved in `%APPDATA%\BrightScroll\settings.json`. BrightScroll runs without administrator privileges.
+
+GitHub Actions builds the Windows installer when a `v*` tag is pushed and attaches it to that tag's release. To build for an existing release, run the **Windows release** workflow manually and enter its tag; existing assets with the same filename are left untouched.
