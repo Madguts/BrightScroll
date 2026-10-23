@@ -19,6 +19,7 @@ internal static class NativeMethods
     internal const uint NifIcon = 0x02;
     internal const uint NifTip = 0x04;
     internal const uint NifGuid = 0x20;
+    internal const uint NifShowTip = 0x80;
     internal const uint EddGetDeviceInterfaceName = 0x00000001;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

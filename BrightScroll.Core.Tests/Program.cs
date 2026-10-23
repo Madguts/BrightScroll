@@ -1,5 +1,13 @@
 using BrightScroll.Core;
 
+var monitorIdentity = "device-id:DISPLAY\\ACME1234\\SERIAL";
+var iconId = NotificationIconIdentity.Create(monitorIdentity);
+if (iconId != NotificationIconIdentity.Create(monitorIdentity.ToLowerInvariant()) ||
+    iconId == NotificationIconIdentity.Create("device-id:DISPLAY\\ACME1234\\OTHER"))
+{
+    throw new InvalidOperationException("Notification icon identity is not stable and monitor-specific.");
+}
+
 var cases = new (int Current, int Increment, int Notches, int Expected)[]
 {
     (50, 5, 1, 55),
