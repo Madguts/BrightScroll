@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using BrightScroll.Core;
@@ -99,11 +100,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var discovered = DescribeDisplay(screen);
             if (_displays.TryGetValue(screen.DeviceName, out var existing))
             {
-                if (!string.Equals(existing.DisplayName, discovered.DisplayName, StringComparison.Ordinal) ||
-                    !string.Equals(existing.AppearanceIdentity, discovered.AppearanceIdentity, StringComparison.OrdinalIgnoreCase))
+                var identityChanged = !string.Equals(
+                    existing.AppearanceIdentity,
+                    discovered.AppearanceIdentity,
+                    StringComparison.OrdinalIgnoreCase);
+                var nameChanged = !string.Equals(existing.DisplayName, discovered.DisplayName, StringComparison.Ordinal);
+                if (identityChanged)
                 {
+                    RemoveIcon(existing);
                     existing.DisplayName = discovered.DisplayName;
                     existing.AppearanceIdentity = discovered.AppearanceIdentity;
+                    existing.Id = NotificationIconIdentity.Create(discovered.AppearanceIdentity);
+                    AddIcon(existing);
+                    displaysChanged = true;
+                }
+                else if (nameChanged)
+                {
+                    existing.DisplayName = discovered.DisplayName;
                     UpdateIcon(existing);
                     displaysChanged = true;
                 }
@@ -181,10 +194,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Size = (uint)Marshal.SizeOf<NativeMethods.NotifyIconData>(),
             WindowHandle = Handle,
             Id = 1,
-            Flags = NativeMethods.NifMessage | NativeMethods.NifIcon | NativeMethods.NifTip | NativeMethods.NifGuid,
+            Flags = NativeMethods.NifMessage | NativeMethods.NifIcon | NativeMethods.NifTip |
+                NativeMethods.NifGuid | NativeMethods.NifShowTip,
             CallbackMessage = TrayCallbackMessage,
             IconHandle = display.Icon?.Handle ?? IntPtr.Zero,
-            Tip = display.DisplayName.Length <= 127 ? display.DisplayName : display.DisplayName[..127],
+            Tip = TruncateTooltip(display.DisplayName),
             Info = string.Empty,
             InfoTitle = string.Empty,
             Guid = display.Id
@@ -200,14 +214,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             graphics.Clear(Color.Transparent);
             var text = display.Status?.Percent is int percent ? percent.ToString() : "--";
-            using var font = CreateIconFont(graphics, text, appearance.FontFamily);
-            var measured = graphics.MeasureString(text, font);
-            graphics.DrawString(
-                text,
-                font,
-                foreground,
-                (bitmap.Width - measured.Width) / 2,
-                (bitmap.Height - measured.Height) / 2);
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var path = CreateIconTextPath(text, appearance.FontFamily, bitmap.Size);
+            graphics.FillPath(foreground, path);
         }
 
         var iconHandle = bitmap.GetHicon();
@@ -221,30 +230,64 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private static Font CreateIconFont(Graphics graphics, string text, string family)
+    private static string TruncateTooltip(string text)
     {
-        var size = 30f;
-        while (true)
+        const int maxLength = 127;
+        if (text.Length <= maxLength)
         {
-            Font font;
-            try
-            {
-                font = new Font(family, size, FontStyle.Bold, GraphicsUnit.Pixel);
-            }
-            catch (ArgumentException)
-            {
-                font = new Font("Segoe UI", size, FontStyle.Bold, GraphicsUnit.Pixel);
-            }
-
-            var measured = graphics.MeasureString(text, font);
-            if ((measured.Width <= 32 && measured.Height <= 32) || size <= 10)
-            {
-                return font;
-            }
-
-            font.Dispose();
-            size -= 1;
+            return text;
         }
+
+        var length = maxLength;
+        if (char.IsHighSurrogate(text[length - 1]) && char.IsLowSurrogate(text[length]))
+        {
+            length--;
+        }
+
+        return text[..length];
+    }
+
+    private static GraphicsPath CreateIconTextPath(string text, string family, Size iconSize)
+    {
+        FontFamily fontFamily;
+        try
+        {
+            fontFamily = new FontFamily(family);
+        }
+        catch (ArgumentException)
+        {
+            fontFamily = new FontFamily("Segoe UI");
+        }
+
+        using (fontFamily)
+        {
+            for (var size = 40f; size >= 8f; size--)
+            {
+                using var font = new Font(fontFamily, size, FontStyle.Bold, GraphicsUnit.Pixel);
+                var path = new GraphicsPath();
+                path.AddString(
+                    text,
+                    fontFamily,
+                    (int)FontStyle.Bold,
+                    size,
+                    PointF.Empty,
+                    StringFormat.GenericTypographic);
+                var bounds = path.GetBounds();
+                if (bounds.Width <= iconSize.Width - 2 && bounds.Height <= iconSize.Height - 2)
+                {
+                    using var transform = new Matrix();
+                    transform.Translate(
+                        (iconSize.Width - bounds.Width) / 2 - bounds.X,
+                        (iconSize.Height - bounds.Height) / 2 - bounds.Y);
+                    path.Transform(transform);
+                    return path;
+                }
+
+                path.Dispose();
+            }
+        }
+
+        throw new InvalidOperationException($"Could not render tray icon text '{text}'.");
     }
 
     private IntPtr MouseHookCallback(int code, IntPtr wParam, IntPtr lParam)

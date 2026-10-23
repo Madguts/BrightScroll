@@ -191,7 +191,7 @@ internal sealed class DisplayEntry(
     internal string DeviceName { get; } = deviceName;
     internal string DisplayName { get; set; } = displayName;
     internal string AppearanceIdentity { get; set; } = appearanceIdentity;
-    internal Guid Id { get; } = Guid.NewGuid();
+    internal Guid Id { get; set; } = NotificationIconIdentity.Create(appearanceIdentity);
     internal int Index { get; set; }
     internal Icon? Icon { get; set; }
     internal BrightnessStatus? Status { get; set; } = status;
