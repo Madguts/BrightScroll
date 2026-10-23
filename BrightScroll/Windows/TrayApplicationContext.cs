@@ -50,6 +50,32 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private static DisplayEntry DescribeDisplay(Screen screen)
+    {
+        var monitor = new NativeMethods.DisplayDevice
+        {
+            Size = (uint)Marshal.SizeOf<NativeMethods.DisplayDevice>(),
+            DeviceName = string.Empty,
+            DeviceString = string.Empty,
+            DeviceId = string.Empty,
+            DeviceKey = string.Empty
+        };
+        var hasMonitor = NativeMethods.EnumDisplayDevices(
+            screen.DeviceName,
+            0,
+            ref monitor,
+            NativeMethods.EddGetDeviceInterfaceName);
+        var displayName = hasMonitor && !string.IsNullOrWhiteSpace(monitor.DeviceString)
+            ? monitor.DeviceString.Trim()
+            : screen.DeviceName;
+        var appearanceIdentity = hasMonitor && !string.IsNullOrWhiteSpace(monitor.DeviceId)
+            ? $"device-id:{monitor.DeviceId.Trim()}"
+            : hasMonitor && !string.IsNullOrWhiteSpace(monitor.DeviceKey)
+                ? $"device-key:{monitor.DeviceKey.Trim()}"
+                : $"display:{screen.DeviceName}";
+        return new DisplayEntry(screen.DeviceName, displayName, appearanceIdentity, null);
+    }
+
     private IntPtr Handle => _window.Handle;
 
     private IEnumerable<DisplayEntry> Entries => _displays.Values;
@@ -58,25 +84,44 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         var screens = Screen.AllScreens;
         var connected = screens.Select(screen => screen.DeviceName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var displaysChanged = false;
         foreach (var deviceName in _displays.Keys.Where(name => !connected.Contains(name)).ToArray())
         {
             RemoveIcon(_displays[deviceName]);
             _displayByIndex.Remove(_displays[deviceName].Index);
             _wheelRemainders.Remove(_displays[deviceName].Index);
             _displays.Remove(deviceName);
+            displaysChanged = true;
         }
 
         foreach (var screen in screens)
         {
-            if (_displays.ContainsKey(screen.DeviceName))
+            var discovered = DescribeDisplay(screen);
+            if (_displays.TryGetValue(screen.DeviceName, out var existing))
             {
+                if (!string.Equals(existing.DisplayName, discovered.DisplayName, StringComparison.Ordinal) ||
+                    !string.Equals(existing.AppearanceIdentity, discovered.AppearanceIdentity, StringComparison.OrdinalIgnoreCase))
+                {
+                    existing.DisplayName = discovered.DisplayName;
+                    existing.AppearanceIdentity = discovered.AppearanceIdentity;
+                    UpdateIcon(existing);
+                    displaysChanged = true;
+                }
+
                 continue;
             }
 
-            var display = new DisplayEntry(screen.DeviceName, null) { Index = ++_nextIndex };
+            var display = discovered;
+            display.Index = ++_nextIndex;
             _displays.Add(screen.DeviceName, display);
             _displayByIndex.Add(display.Index, display);
             AddIcon(display);
+            displaysChanged = true;
+        }
+
+        if (displaysChanged)
+        {
+            _settingsForm?.UpdateDisplays(Entries);
         }
 
         _ = RefreshBrightnessAsync();
@@ -85,7 +130,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void AddIcon(DisplayEntry display)
     {
         var oldIcon = display.Icon;
-        display.Icon = CreateIcon(display.Status?.Percent);
+        display.Icon = CreateIcon(display);
         var data = CreateNotifyIconData(display);
         if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NimAdd, ref data))
         {
@@ -106,7 +151,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void UpdateIcon(DisplayEntry display)
     {
-        var newIcon = CreateIcon(display.Status?.Percent);
+        var newIcon = CreateIcon(display);
         var oldIcon = display.Icon;
         display.Icon = newIcon;
         var data = CreateNotifyIconData(display);
@@ -136,27 +181,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Size = (uint)Marshal.SizeOf<NativeMethods.NotifyIconData>(),
             WindowHandle = Handle,
             Id = 1,
-            Flags = NativeMethods.NifMessage | NativeMethods.NifIcon | NativeMethods.NifGuid,
+            Flags = NativeMethods.NifMessage | NativeMethods.NifIcon | NativeMethods.NifTip | NativeMethods.NifGuid,
             CallbackMessage = TrayCallbackMessage,
             IconHandle = display.Icon?.Handle ?? IntPtr.Zero,
-            Tip = string.Empty,
+            Tip = display.DisplayName.Length <= 127 ? display.DisplayName : display.DisplayName[..127],
             Info = string.Empty,
             InfoTitle = string.Empty,
             Guid = display.Id
         };
     }
 
-    private Icon CreateIcon(int? percent)
+    private Icon CreateIcon(DisplayEntry display)
     {
+        var appearance = _settings.GetAppearance(display.AppearanceIdentity);
         using var bitmap = new Bitmap(32, 32);
         using (var graphics = Graphics.FromImage(bitmap))
-        using (var background = new SolidBrush(ColorTranslator.FromHtml(_settings.BackgroundColor)))
-        using (var foreground = new SolidBrush(ColorTranslator.FromHtml(_settings.TextColor)))
+        using (var foreground = new SolidBrush(ColorTranslator.FromHtml(appearance.TextColor)))
         {
             graphics.Clear(Color.Transparent);
-            graphics.FillRectangle(background, 0, 0, bitmap.Width, bitmap.Height);
-            var text = percent?.ToString() ?? "--";
-            using var font = CreateIconFont(graphics, text);
+            var text = display.Status?.Percent is int percent ? percent.ToString() : "--";
+            using var font = CreateIconFont(graphics, text, appearance.FontFamily);
             var measured = graphics.MeasureString(text, font);
             graphics.DrawString(
                 text,
@@ -177,22 +221,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private Font CreateIconFont(Graphics graphics, string text)
+    private static Font CreateIconFont(Graphics graphics, string text, string family)
     {
-        var size = 24f;
+        var size = 30f;
         while (true)
         {
             Font font;
             try
             {
-                font = new Font(_settings.FontFamily, size, FontStyle.Bold, GraphicsUnit.Pixel);
+                font = new Font(family, size, FontStyle.Bold, GraphicsUnit.Pixel);
             }
             catch (ArgumentException)
             {
                 font = new Font("Segoe UI", size, FontStyle.Bold, GraphicsUnit.Pixel);
             }
 
-            if (graphics.MeasureString(text, font).Width <= 30 || size <= 10)
+            var measured = graphics.MeasureString(text, font);
+            if ((measured.Width <= 32 && measured.Height <= 32) || size <= 10)
             {
                 return font;
             }
@@ -276,6 +321,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             var snapshots = Entries.ToArray();
+            var statusChanged = false;
             var results = await Task.WhenAll(snapshots.Select(async display =>
             {
                 var screen = Screen.AllScreens.FirstOrDefault(item =>
@@ -294,10 +340,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 {
                     display.Status = status;
                     UpdateIcon(display);
+                    statusChanged = true;
                 }
             }
 
-            _settingsForm?.UpdateDisplays(Entries);
+            if (statusChanged)
+            {
+                _settingsForm?.UpdateDisplays(Entries);
+            }
         }
         catch (Exception exception)
         {
