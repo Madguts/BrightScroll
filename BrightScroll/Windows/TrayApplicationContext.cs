@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
@@ -39,9 +40,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _taskbarCreatedMessage = NativeMethods.RegisterWindowMessage("TaskbarCreated");
 
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 5000 };
-        _refreshTimer.Tick += (_, _) => RefreshDisplays();
+        _refreshTimer.Tick += (_, _) => SafeRefreshDisplays();
         _refreshTimer.Start();
-        RefreshDisplays();
+        SafeRefreshDisplays();
 
         _mouseHook = NativeMethods.SetWindowsHookEx(NativeMethods.WhMouseLl, _hookCallback, IntPtr.Zero, 0);
         if (_mouseHook == IntPtr.Zero)
@@ -111,14 +112,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     existing.DisplayName = discovered.DisplayName;
                     existing.AppearanceIdentity = discovered.AppearanceIdentity;
                     existing.Id = NotificationIconIdentity.Create(discovered.AppearanceIdentity);
-                    AddIcon(existing);
                     displaysChanged = true;
                 }
                 else if (nameChanged)
                 {
                     existing.DisplayName = discovered.DisplayName;
-                    UpdateIcon(existing);
+                    if (existing.IsRegistered)
+                    {
+                        TryUpdateIcon(existing);
+                    }
+
                     displaysChanged = true;
+                }
+
+                if (!existing.IsRegistered)
+                {
+                    TryAddIcon(existing);
                 }
 
                 continue;
@@ -128,7 +137,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             display.Index = ++_nextIndex;
             _displays.Add(screen.DeviceName, display);
             _displayByIndex.Add(display.Index, display);
-            AddIcon(display);
+            TryAddIcon(display);
             displaysChanged = true;
         }
 
@@ -140,43 +149,153 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _ = RefreshBrightnessAsync();
     }
 
-    private void AddIcon(DisplayEntry display)
+    private void SafeRefreshDisplays()
     {
-        var oldIcon = display.Icon;
-        display.Icon = CreateIcon(display);
-        var data = CreateNotifyIconData(display);
-        if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NimAdd, ref data))
+        try
         {
-            display.Icon.Dispose();
-            display.Icon = oldIcon;
-            throw new InvalidOperationException(
-                $"Could not create the tray icon for {display.DeviceName} (error {Marshal.GetLastWin32Error()}).");
+            RefreshDisplays();
         }
-
-        oldIcon?.Dispose();
-        data.TimeoutOrVersion = 4;
-        if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NimSetVersion, ref data))
+        catch (Exception exception)
         {
-            RemoveIcon(display);
-            throw new InvalidOperationException("Could not configure Windows notification-area callbacks.");
+            ReportCallbackFailure("refresh displays", exception);
         }
     }
 
-    private void UpdateIcon(DisplayEntry display)
+    private bool TryAddIcon(DisplayEntry display, bool ignoreRetryDelay = false)
     {
-        var newIcon = CreateIcon(display);
-        var oldIcon = display.Icon;
-        display.Icon = newIcon;
-        var data = CreateNotifyIconData(display);
-        if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NimModify, ref data))
+        if (!ignoreRetryDelay && DateTimeOffset.UtcNow < display.NextIconRetryAt)
         {
-            newIcon.Dispose();
-            display.Icon = oldIcon;
-            throw new InvalidOperationException(
-                $"Could not update the tray icon for {display.DeviceName} (error {Marshal.GetLastWin32Error()}).");
+            return false;
         }
 
-        oldIcon?.Dispose();
+        Icon? newIcon = null;
+        try
+        {
+            newIcon = CreateIcon(display);
+            var data = CreateNotifyIconData(display, newIcon);
+            if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NimAdd, ref data))
+            {
+                var error = Marshal.GetLastWin32Error();
+                throw new InvalidOperationException(
+                    $"Could not create the tray icon for {display.DeviceName} " +
+                    $"(Shell_NotifyIcon error {error}).");
+            }
+
+            data.TimeoutOrVersion = 4;
+            if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NimSetVersion, ref data))
+            {
+                var error = Marshal.GetLastWin32Error();
+                NativeMethods.Shell_NotifyIcon(NativeMethods.NimDelete, ref data);
+                throw new InvalidOperationException(
+                    $"Could not configure Windows notification-area callbacks for {display.DeviceName} " +
+                    $"(Shell_NotifyIcon error {error}).");
+            }
+
+            var oldIcon = display.Icon;
+            display.Icon = newIcon;
+            newIcon = null;
+            display.IsRegistered = true;
+            oldIcon?.Dispose();
+            ReportIconRecovered(display);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            newIcon?.Dispose();
+            if (display.IsRegistered)
+            {
+                var deleteData = CreateNotifyIconData(display);
+                if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NimDelete, ref deleteData))
+                {
+                    Trace.TraceWarning(
+                        $"Could not remove the stale tray icon for {display.DeviceName} " +
+                        $"(Shell_NotifyIcon error {Marshal.GetLastWin32Error()}).");
+                }
+            }
+
+            display.IsRegistered = false;
+            ReportIconFailure(display, exception);
+            return false;
+        }
+    }
+
+    private bool TryUpdateIcon(DisplayEntry display)
+    {
+        if (!display.IsRegistered)
+        {
+            return TryAddIcon(display);
+        }
+
+        Icon? newIcon = null;
+        try
+        {
+            newIcon = CreateIcon(display);
+            var data = CreateNotifyIconData(display, newIcon);
+            if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NimModify, ref data))
+            {
+                var error = Marshal.GetLastWin32Error();
+                throw new InvalidOperationException(
+                    $"Could not update the tray icon for {display.DeviceName} " +
+                    $"(Shell_NotifyIcon error {error}).");
+            }
+
+            var oldIcon = display.Icon;
+            display.Icon = newIcon;
+            newIcon = null;
+            oldIcon?.Dispose();
+            ReportIconRecovered(display);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            newIcon?.Dispose();
+            if (display.IsRegistered)
+            {
+                var deleteData = CreateNotifyIconData(display);
+                if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NimDelete, ref deleteData))
+                {
+                    Trace.TraceWarning(
+                        $"Could not remove the stale tray icon for {display.DeviceName} " +
+                        $"(Shell_NotifyIcon error {Marshal.GetLastWin32Error()}).");
+                }
+            }
+
+            display.IsRegistered = false;
+            ReportIconFailure(display, exception);
+            return false;
+        }
+    }
+
+    private void ReportIconFailure(DisplayEntry display, Exception exception)
+    {
+        display.ConsecutiveIconFailures++;
+        var delay = TrayIconRetryDelay.GetDelay(display.ConsecutiveIconFailures);
+        display.NextIconRetryAt = DateTimeOffset.UtcNow + delay;
+        var message =
+            $"Could not register the tray icon for {display.DeviceName}: {exception.GetBaseException().Message} " +
+            $"Retrying in {delay.TotalSeconds:0} seconds.";
+        display.IconFailureMessage = message;
+        Trace.TraceWarning(message);
+        _settingsForm?.ShowError(message);
+    }
+
+    private void ReportIconRecovered(DisplayEntry display)
+    {
+        if (display.ConsecutiveIconFailures == 0)
+        {
+            return;
+        }
+
+        Trace.TraceInformation(
+            $"Recovered the tray icon for {display.DeviceName} after {display.ConsecutiveIconFailures} failed attempt(s).");
+        if (display.IconFailureMessage is not null)
+        {
+            _settingsForm?.ClearError(display.IconFailureMessage);
+            display.IconFailureMessage = null;
+        }
+
+        display.ConsecutiveIconFailures = 0;
+        display.NextIconRetryAt = DateTimeOffset.MinValue;
     }
 
     private void RemoveIcon(DisplayEntry display)
@@ -185,9 +304,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         NativeMethods.Shell_NotifyIcon(NativeMethods.NimDelete, ref data);
         display.Icon?.Dispose();
         display.Icon = null;
+        display.IsRegistered = false;
+        display.ConsecutiveIconFailures = 0;
+        display.NextIconRetryAt = DateTimeOffset.MinValue;
+        display.IconFailureMessage = null;
     }
 
-    private NativeMethods.NotifyIconData CreateNotifyIconData(DisplayEntry display)
+    private NativeMethods.NotifyIconData CreateNotifyIconData(DisplayEntry display, Icon? icon = null)
     {
         return new NativeMethods.NotifyIconData
         {
@@ -197,7 +320,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Flags = NativeMethods.NifMessage | NativeMethods.NifIcon | NativeMethods.NifTip |
                 NativeMethods.NifGuid | NativeMethods.NifShowTip,
             CallbackMessage = TrayCallbackMessage,
-            IconHandle = display.Icon?.Handle ?? IntPtr.Zero,
+            IconHandle = (icon ?? display.Icon)?.Handle ?? IntPtr.Zero,
             Tip = TruncateTooltip(display.DisplayName),
             Info = string.Empty,
             InfoTitle = string.Empty,
@@ -382,7 +505,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 if (display.Status != status)
                 {
                     display.Status = status;
-                    UpdateIcon(display);
+                    TryUpdateIcon(display);
                     statusChanged = true;
                 }
             }
@@ -422,7 +545,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             if (display.Icon is not null)
             {
-                UpdateIcon(display);
+                TryUpdateIcon(display);
             }
         }
     }
@@ -464,20 +587,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             foreach (var display in Entries)
             {
-                AddIcon(display);
+                display.IsRegistered = false;
+                TryAddIcon(display, ignoreRetryDelay: true);
             }
 
             return;
         }
 
-        if (message.Msg == NativeMethods.WmDisplayChange)
+        if (message.Msg is NativeMethods.WmDisplayChange or NativeMethods.WmDeviceChange)
         {
             var timer = new System.Windows.Forms.Timer { Interval = 700 };
             timer.Tick += (_, _) =>
             {
                 timer.Stop();
                 timer.Dispose();
-                RefreshDisplays();
+                SafeRefreshDisplays();
             };
             timer.Start();
             return;
@@ -514,7 +638,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 }
 
                 display.Status = update.Status;
-                UpdateIcon(display);
+                TryUpdateIcon(display);
             }
 
             _settingsForm?.UpdateDisplays(Entries);
@@ -525,9 +649,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         protected override void WndProc(ref Message message)
         {
-            owner.HandleWindowMessage(ref message);
+            try
+            {
+                owner.HandleWindowMessage(ref message);
+            }
+            catch (Exception exception)
+            {
+                owner.ReportCallbackFailure("native window callback", exception);
+            }
+
             base.WndProc(ref message);
         }
+    }
+
+    private void ReportCallbackFailure(string operation, Exception exception)
+    {
+        var message = $"BrightScroll could not {operation}: {exception.GetBaseException().Message}";
+        Trace.TraceError(message);
+        _settingsForm?.ShowError(message);
     }
 
     private static class Cursor
